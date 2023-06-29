@@ -1,19 +1,21 @@
-import numpy as np
-import os
-import pyvips
-import cv2
-import multiresolutionimageinterface as mir
-import time
 import copy
-import matplotlib.pyplot as plt
 import logging
 import math
+import os
+import time
 
-from .get_resname import get_resname
+import cv2
+import matplotlib.pyplot as plt
+import multiresolutionimageinterface as mir
+import numpy as np
+import openslide as osl
+import pyvips
+
 from .fuse_images_highres import fuse_images_highres
+from .get_resname import get_resname
 from .gradient_blending import perform_blending
-from .line_utils import apply_im_tform_to_coords
 from .landmark_evaluation import evaluate_landmarks
+from .line_utils import apply_im_tform_to_coords
 
 os.environ["VIPS_CONCURRENCY"] = "20"
 
@@ -26,7 +28,6 @@ class FullResImage:
     """
 
     def __init__(self, parameters, idx):
-
         self.idx = idx
         self.output_res = parameters["output_res"]
         self.raw_image_name = parameters["raw_image_names"][self.idx]
@@ -34,13 +35,17 @@ class FullResImage:
         self.save_dir = parameters["sol_save_dir"]
         self.data_dir = parameters["data_dir"]
         self.raw_image_path = self.data_dir.joinpath("raw_images", self.raw_image_name)
-        self.orientation = parameters["detected_configuration"][self.raw_image_name].lower()
+        self.orientation = parameters["detected_configuration"][
+            self.raw_image_name
+        ].lower()
         self.rot_k = parameters["rot_steps"][self.raw_image_name]
         self.resolutions = parameters["resolutions"]
         self.resolution_scaling = parameters["resolution_scaling"]
 
         if self.raw_mask_name:
-            self.raw_mask_path = parameters["data_dir"].joinpath("raw_masks", self.raw_mask_name)
+            self.raw_mask_path = parameters["data_dir"].joinpath(
+                "raw_masks", self.raw_mask_name
+            )
 
         self.last_res = parameters["resolutions"][-1]
         self.res_name = get_resname(self.last_res)
@@ -49,7 +54,10 @@ class FullResImage:
 
         self.data_dir = parameters["data_dir"]
         self.ps_mask_path = self.save_dir.joinpath(
-            "images", self.slice_idx, self.res_name, f"fragment_{self.orientation}_mask.png"
+            "images",
+            self.slice_idx,
+            self.res_name,
+            f"fragment_{self.orientation}_mask.png",
         )
 
         self.coord_path = parameters["save_dir"].joinpath(
@@ -65,9 +73,9 @@ class FullResImage:
         """
 
         # Get full res image, mask and pythostitcher mask
-        self.opener = mir.MultiResolutionImageReader()
-        self.raw_image = self.opener.open(str(self.raw_image_path))
-        self.raw_mask = self.opener.open(str(self.raw_mask_path))
+        self.opener = osl.OpenSlide
+        self.raw_image = self.opener(str(self.raw_image_path))
+        self.raw_mask = self.opener(str(self.raw_mask_path))
 
         self.ps_mask = cv2.imread(str(self.ps_mask_path))
         self.ps_mask = cv2.cvtColor(self.ps_mask, cv2.COLOR_BGR2GRAY)
@@ -85,21 +93,25 @@ class FullResImage:
         """
 
         # Get full resolution dims
-        self.raw_image_dims = self.raw_image.getLevelDimensions(0)
-        self.raw_mask_dims = self.raw_mask.getLevelDimensions(0)
+        self.raw_image_dims = self.raw_image.level_dimensions[0]
+        self.raw_mask_dims = self.raw_mask.level_dimensions[0]
 
         # Obtain the resolution (µm/pixel) for each level
-        n_levels = self.raw_image.getNumberOfLevels()
-        ds_per_level = [self.raw_image.getLevelDownsample(i) for i in range(n_levels)]
+        n_levels = self.raw_image.level_count
+        ds_per_level = self.raw_image.level_downsamples
         res_per_level = [
-            self.raw_image.getSpacing()[0] * scale
+            float(self.raw_image.properties["aperio.MPP"]) * scale
             for i, scale in zip(range(n_levels), ds_per_level)
         ]
 
         # Get the optimal level based on the desired output resolution
-        self.output_level = int(np.argmin([(i - self.output_res) ** 2 for i in res_per_level]))
-        self.output_spacing = self.raw_image.getSpacing()[0] * self.raw_image.getLevelDownsample(
-            self.output_level)
+        self.output_level = int(
+            np.argmin([(i - self.output_res) ** 2 for i in res_per_level])
+        )
+        self.output_spacing = (
+            float(self.raw_image.properties["aperio.MPP"])
+            * self.raw_image.level_downsamples[self.output_level]
+        )
 
         assert self.output_level <= self.ps_level, (
             f"Resolution level of the output image must be lower than the PythoStitcher "
@@ -110,6 +122,10 @@ class FullResImage:
         # Get image on this optimal output level
         if self.raw_image_path.suffix == ".mrxs":
             self.outputres_image = pyvips.Image.new_from_file(
+                str(self.raw_image_path), level=self.output_level, access="sequential"
+            )
+        elif self.raw_image_path.suffix == ".svs":
+            self.outputres_image = pyvips.Image.new_from_file(
                 str(self.raw_image_path), level=self.output_level
             )
         elif self.raw_image_path.suffix in [".tif", ".tiff"]:
@@ -117,7 +133,7 @@ class FullResImage:
                 str(self.raw_image_path), page=self.output_level
             )
         else:
-            raise ValueError("currently we only support mrxs and tif files")
+            raise ValueError("currently we only support svs, mrxs and tif files")
 
         # Get new image dims
         self.outputres_image_dims = (
@@ -126,15 +142,22 @@ class FullResImage:
         )
 
         # Get scaling factor raw mask and coords wrt to final output resolution
-        self.scaling_ps2outputres = 2 ** (self.ps_level - self.output_level) / self.last_res
-        self.scaling_coords2outputres = self.raw_image_dims[0] / self.outputres_image_dims[0]
+        self.scaling_ps2outputres = (
+            2 ** (self.ps_level - self.output_level) / self.last_res
+        )
+        self.scaling_coords2outputres = (
+            self.raw_image_dims[0] / self.outputres_image_dims[0]
+        )
 
         # Dimension of final stitching result
-        self.target_dims = [int(i * self.scaling_ps2outputres) for i in self.ps_mask.shape]
+        self.target_dims = [
+            int(i * self.scaling_ps2outputres) for i in self.ps_mask.shape
+        ]
 
         # Get the optimal transformation obtained with the genetic algorithm
         self.ps_tform = np.load(
-            f"{self.save_dir}/tform/{self.res_name}_tform_final.npy", allow_pickle=True,
+            f"{self.save_dir}/tform/{self.res_name}_tform_final.npy",
+            allow_pickle=True,
         ).item()
 
         # Upsample it to use it for the final image
@@ -142,8 +165,18 @@ class FullResImage:
             int(self.ps_tform[self.orientation][0] * self.scaling_ps2outputres),
             int(self.ps_tform[self.orientation][1] * self.scaling_ps2outputres),
             np.round(self.ps_tform[self.orientation][2], 1),
-            tuple([int(i * self.scaling_ps2outputres) for i in self.ps_tform[self.orientation][3]]),
-            tuple([int(i * self.scaling_ps2outputres) for i in self.ps_tform[self.orientation][4]]),
+            tuple(
+                [
+                    int(i * self.scaling_ps2outputres)
+                    for i in self.ps_tform[self.orientation][3]
+                ]
+            ),
+            tuple(
+                [
+                    int(i * self.scaling_ps2outputres)
+                    for i in self.ps_tform[self.orientation][4]
+                ]
+            ),
         ]
 
         return
@@ -157,22 +190,28 @@ class FullResImage:
         # between feasible image processing with opencv and mask resolution
         best_mask_output_dims = 2000
         all_mask_dims = [
-            self.raw_mask.getLevelDimensions(i) for i in range(self.raw_mask.getNumberOfLevels())
+            self.raw_mask.level_dimensions[i]
+            for i in range(len(self.raw_mask.level_dimensions))
         ]
-        self.mask_ds_level = np.argmin([(i[0] - best_mask_output_dims) ** 2 for i in all_mask_dims])
-
-        self.tissueseg_mask = self.raw_mask.getUCharPatch(
-            startX=0,
-            startY=0,
-            width=int(all_mask_dims[self.mask_ds_level][0]),
-            height=int(all_mask_dims[self.mask_ds_level][1]),
-            level=int(self.mask_ds_level),
+        self.mask_ds_level = np.argmin(
+            [(i[0] - best_mask_output_dims) ** 2 for i in all_mask_dims]
+        )
+        mask_dim = (
+            int(all_mask_dims[self.mask_ds_level][0]),
+            int(all_mask_dims[self.mask_ds_level][1]),
+        )
+        self.tissueseg_mask = np.asarray(
+            self.raw_mask.read_region(mask_dim, self.mask_ds_level, mask_dim)
+            .convert("RGB")
+            .convert("L")
         )
 
         # Convert mask for opencv processing
         self.tissueseg_mask = self.tissueseg_mask / np.max(self.tissueseg_mask)
         self.tissueseg_mask = (self.tissueseg_mask * 255).astype("uint8")
-        self.scaling_mask2outputres = self.outputres_image_dims[0] / self.tissueseg_mask.shape[1]
+        self.scaling_mask2outputres = (
+            self.outputres_image_dims[0] / self.tissueseg_mask.shape[1]
+        )
 
         # Get information on all connected components in the mask
         num_labels, self.tissueseg_mask, stats, _ = cv2.connectedComponentsWithStats(
@@ -181,7 +220,9 @@ class FullResImage:
 
         # Extract largest connected component
         largest_cc_label = np.argmax(stats[1:, -1]) + 1
-        self.tissueseg_mask = ((self.tissueseg_mask == largest_cc_label) * 255).astype("uint8")
+        self.tissueseg_mask = ((self.tissueseg_mask == largest_cc_label) * 255).astype(
+            "uint8"
+        )
 
         # Some morphological operations for cleaning up edges
         kernel = cv2.getStructuringElement(shape=cv2.MORPH_ELLIPSE, ksize=(20, 20))
@@ -200,15 +241,14 @@ class FullResImage:
 
         # Flood fill to remove holes inside mask
         seedpoint = (0, 0)
-        floodfill_mask = np.zeros((self.tissueseg_mask.shape[0] + 2, self.tissueseg_mask.shape[1] +
-                                   2)).astype(
-            "uint8"
+        floodfill_mask = np.zeros(
+            (self.tissueseg_mask.shape[0] + 2, self.tissueseg_mask.shape[1] + 2)
+        ).astype("uint8")
+        _, _, self.tissueseg_mask, _ = cv2.floodFill(
+            self.tissueseg_mask, floodfill_mask, seedpoint, 255
         )
-        _, _, self.tissueseg_mask, _ = cv2.floodFill(self.tissueseg_mask, floodfill_mask,
-                                                     seedpoint,
-                                                   255)
         self.tissueseg_mask = self.tissueseg_mask[
-            temp_pad + 1: -(temp_pad + 1), temp_pad + 1: -(temp_pad + 1)
+            temp_pad + 1 : -(temp_pad + 1), temp_pad + 1 : -(temp_pad + 1)
         ]
         self.tissueseg_mask = 1 - self.tissueseg_mask
 
@@ -220,24 +260,25 @@ class FullResImage:
         """
 
         # Get image of same size as tissue segmentation mask
-        im_vs_mask_ds = self.raw_image.getLevelDimensions(0)[0]/self.raw_mask.getLevelDimensions(
-            0)[0]
-        image_ds_level = int(self.mask_ds_level +
-                             int(math.log2(im_vs_mask_ds)))
-
-        image_ds_dims = self.raw_image.getLevelDimensions(image_ds_level)
-        self.otsu_image = self.raw_image.getUCharPatch(
-            startX=0,
-            startY=0,
-            width=int(image_ds_dims[0]),
-            height=int(image_ds_dims[1]),
-            level=int(image_ds_level),
+        im_vs_mask_ds = (
+            self.raw_image.level_dimensions[0][0] / self.raw_mask.level_dimensions[0][0]
         )
+        image_ds_level = int(self.mask_ds_level + int(math.log2(im_vs_mask_ds)))
+        image_ds_level = np.argmin(
+            np.array(
+                np.array(self.raw_image.level_dimensions) - np.array([2000] * 2)
+            ).sum(axis=1)
+        )
+        image_ds_dims = self.raw_image.level_dimensions[image_ds_level]
+        self.otsu_image = np.asarray(self.raw_image.read_region(
+            image_ds_dims, int(image_ds_level), image_ds_dims
+        ))
 
         image_hsv = cv2.cvtColor(self.otsu_image, cv2.COLOR_RGB2HSV)
         image_hsv = cv2.medianBlur(image_hsv[:, :, 1], 7)
-        _, self.otsu_mask = cv2.threshold(image_hsv, 0, 255, cv2.THRESH_OTSU +
-                                          cv2.THRESH_BINARY)
+        _, self.otsu_mask = cv2.threshold(
+            image_hsv, 0, 255, cv2.THRESH_OTSU + cv2.THRESH_BINARY
+        )
         self.otsu_mask = (self.otsu_mask / np.max(self.otsu_mask)).astype("uint8")
 
         # Postprocess the mask a bit
@@ -247,7 +288,6 @@ class FullResImage:
         )
 
         return
-
 
     def combine_masks(self):
         """
@@ -275,20 +315,27 @@ class FullResImage:
             self.final_mask,
             [[offset, offset], [offset, offset]],
             mode="constant",
-            constant_values=0
+            constant_values=0,
         )
 
         seedpoint = (0, 0)
         floodfill_mask = np.zeros(
-            (self.final_mask.shape[0] + 2, self.final_mask.shape[1] + 2)).astype("uint8")
-        _, _, self.final_mask, _ = cv2.floodFill(self.final_mask, floodfill_mask, seedpoint, 255)
-        self.final_mask = self.final_mask[1 + offset:-1 - offset, 1 + offset:-1 - offset]
+            (self.final_mask.shape[0] + 2, self.final_mask.shape[1] + 2)
+        ).astype("uint8")
+        _, _, self.final_mask, _ = cv2.floodFill(
+            self.final_mask, floodfill_mask, seedpoint, 255
+        )
+        self.final_mask = self.final_mask[
+            1 + offset : -1 - offset, 1 + offset : -1 - offset
+        ]
         self.final_mask = 1 - self.final_mask
 
         # Crop to nonzero pixels for efficient saving
         self.r_idx, self.c_idx = np.nonzero(self.final_mask)
-        self.final_mask = self.final_mask[np.min(self.r_idx): np.max(self.r_idx),
-                          np.min(self.c_idx): np.max(self.c_idx)]
+        self.final_mask = self.final_mask[
+            np.min(self.r_idx) : np.max(self.r_idx),
+            np.min(self.c_idx) : np.max(self.c_idx),
+        ]
 
         # Convert to pyvips array
         height, width = self.final_mask.shape
@@ -342,14 +389,10 @@ class FullResImage:
 
         # Apply rotation
         self.line_a = apply_im_tform_to_coords(
-            self.line_a,
-            self.outputres_image,
-            self.rot_k
+            self.line_a, self.outputres_image, self.rot_k
         )
         self.line_b = apply_im_tform_to_coords(
-            self.line_b,
-            self.outputres_image,
-            self.rot_k
+            self.line_b, self.outputres_image, self.rot_k
         )
 
         # Rotate image if necessary
@@ -357,8 +400,8 @@ class FullResImage:
             self.outputres_image = self.outputres_image.rotate(self.rot_k * 90)
 
         # Pad image with zeros
-        self.xpad = int((self.target_dims[1] - self.outputres_image.width)/2)
-        self.ypad = int((self.target_dims[0] - self.outputres_image.height)/2)
+        self.xpad = int((self.target_dims[1] - self.outputres_image.width) / 2)
+        self.ypad = int((self.target_dims[0] - self.outputres_image.height) / 2)
 
         self.outputres_image = self.outputres_image.gravity(
             "centre", self.target_dims[1], self.target_dims[0]
@@ -366,12 +409,10 @@ class FullResImage:
 
         # Also apply to landmark points
         self.line_a = np.vstack(
-            [self.line_a[:, 0] + self.xpad,
-             self.line_a[:, 1] + self.ypad]
+            [self.line_a[:, 0] + self.xpad, self.line_a[:, 1] + self.ypad]
         ).T
         self.line_b = np.vstack(
-            [self.line_b[:, 0] + self.xpad,
-             self.line_b[:, 1] + self.ypad]
+            [self.line_b[:, 0] + self.xpad, self.line_b[:, 1] + self.ypad]
         ).T
 
         # Get transformation matrix
@@ -422,10 +463,10 @@ class FullResImage:
         if not self.eval_dir.is_dir():
             self.eval_dir.mkdir()
 
-        rot_lines = {"a" : self.line_a_tform, "b" : self.line_b_tform}
+        rot_lines = {"a": self.line_a_tform, "b": self.line_b_tform}
         np.save(
             str(self.eval_dir.joinpath(f"fragment{self.idx+1}_coordinates.npy")),
-            rot_lines
+            rot_lines,
         )
 
         return
@@ -436,20 +477,23 @@ class FullResImage:
         """
 
         # Get all tforms
-        initial_tform = sorted(list(self.save_dir.joinpath("tform").glob("*initial*")))[0]
+        initial_tform = sorted(list(self.save_dir.joinpath("tform").glob("*initial*")))[
+            0
+        ]
         initial_res = "res0000"
         initial_res_scaling = np.round(self.resolution_scaling[-1], 1)
 
         final_tforms = sorted(list(self.save_dir.joinpath("tform").glob("*final*")))
         final_res = [i.name.split("_")[0] for i in final_tforms]
-        final_res_scaling = [self.resolution_scaling[-1]/i for i in self.resolution_scaling]
+        final_res_scaling = [
+            self.resolution_scaling[-1] / i for i in self.resolution_scaling
+        ]
 
         all_tforms = [initial_tform] + final_tforms
         all_res = [initial_res] + final_res
         all_res_scaling = [initial_res_scaling] + final_res_scaling
 
         for tform, res, scale in zip(all_tforms, all_res, all_res_scaling):
-
             # Get resolution specific tform
             ps_tform = np.load(tform, allow_pickle=True).item()
             scaling_ps2outputres = self.scaling_ps2outputres * scale
@@ -457,8 +501,18 @@ class FullResImage:
                 int(ps_tform[self.orientation][0] * scaling_ps2outputres),
                 int(ps_tform[self.orientation][1] * scaling_ps2outputres),
                 np.round(ps_tform[self.orientation][2], 1),
-                tuple([int(i * scaling_ps2outputres) for i in ps_tform[self.orientation][3]]),
-                tuple([int(i * scaling_ps2outputres) for i in ps_tform[self.orientation][4]]),
+                tuple(
+                    [
+                        int(i * scaling_ps2outputres)
+                        for i in ps_tform[self.orientation][3]
+                    ]
+                ),
+                tuple(
+                    [
+                        int(i * scaling_ps2outputres)
+                        for i in ps_tform[self.orientation][4]
+                    ]
+                ),
             ]
 
             # Get transformation matrix
@@ -469,8 +523,12 @@ class FullResImage:
             rotmat[1, 2] += highres_tform[1]
 
             # Transform lines
-            line_a_tform = np.hstack([self.line_a, np.ones((len(self.line_a), 1))]) @ rotmat.T
-            line_b_tform = np.hstack([self.line_b, np.ones((len(self.line_b), 1))]) @ rotmat.T
+            line_a_tform = (
+                np.hstack([self.line_a, np.ones((len(self.line_a), 1))]) @ rotmat.T
+            )
+            line_b_tform = (
+                np.hstack([self.line_b, np.ones((len(self.line_b), 1))]) @ rotmat.T
+            )
 
             # Save lines
             rot_lines = {"a": line_a_tform, "b": line_b_tform}
@@ -478,8 +536,12 @@ class FullResImage:
             if not multi_res_save_dir.is_dir():
                 multi_res_save_dir.mkdir()
             np.save(
-                str(multi_res_save_dir.joinpath(f"{res}_fragment{self.idx + 1}_coordinates.npy")),
-                rot_lines
+                str(
+                    multi_res_save_dir.joinpath(
+                        f"{res}_fragment{self.idx + 1}_coordinates.npy"
+                    )
+                ),
+                rot_lines,
             )
 
         return
@@ -501,10 +563,14 @@ def generate_full_res(parameters, log):
     savelog_image, savelog_mask = [0], [0]
     handler_log = copy.deepcopy(log)
 
-    parameters["blend_dir"] = parameters["sol_save_dir"].joinpath("highres", "blend_summary")
+    parameters["blend_dir"] = parameters["sol_save_dir"].joinpath(
+        "highres", "blend_summary"
+    )
 
     # Initiate class for each fragment to handle full resolution image
-    full_res_fragments = [FullResImage(parameters, idx) for idx in range(parameters["n_fragments"])]
+    full_res_fragments = [
+        FullResImage(parameters, idx) for idx in range(parameters["n_fragments"])
+    ]
 
     log.log(parameters["my_level"], "Processing high resolution fragments")
     start = time.time()
@@ -526,7 +592,8 @@ def generate_full_res(parameters, log):
     log.setLevel(logging.ERROR)
 
     log.log(
-        parameters["my_level"], f" > finished in {int(np.ceil((time.time()-start)/60))} mins!\n"
+        parameters["my_level"],
+        f" > finished in {int(np.ceil((time.time()-start)/60))} mins!\n",
     )
 
     # Add all images as the default stitching method
@@ -543,7 +610,10 @@ def generate_full_res(parameters, log):
     parameters["tif_mask_path"] = str(
         parameters["sol_save_dir"].joinpath("highres", "temp_mask.tif")
     )
-    log.log(parameters["my_level"], f"Saving temporary mask at {parameters['output_res']} µm/pixel")
+    log.log(
+        parameters["my_level"],
+        f"Saving temporary mask at {parameters['output_res']} µm/pixel",
+    )
     start = time.time()
     result_mask.write_to_file(
         parameters["tif_mask_path"],
@@ -553,7 +623,8 @@ def generate_full_res(parameters, log):
         pyramid=True,
     )
     log.log(
-        parameters["my_level"], f" > finished in {int(np.ceil((time.time()-start)/60))} mins!\n"
+        parameters["my_level"],
+        f" > finished in {int(np.ceil((time.time()-start)/60))} mins!\n",
     )
 
     # Perform blending in areas of overlap
@@ -563,7 +634,8 @@ def generate_full_res(parameters, log):
         result_image, result_mask, full_res_fragments, log, parameters
     )
     log.log(
-        parameters["my_level"], f" > finished in {int(np.ceil((time.time()-start)/60))} mins!\n"
+        parameters["my_level"],
+        f" > finished in {int(np.ceil((time.time()-start)/60))} mins!\n",
     )
 
     # Remove temporary mask
@@ -575,7 +647,8 @@ def generate_full_res(parameters, log):
 
     # Save final result
     log.log(
-        parameters["my_level"], f"Saving blended end result at {parameters['output_res']} µm/pixel"
+        parameters["my_level"],
+        f"Saving blended end result at {parameters['output_res']} µm/pixel",
     )
     start = time.time()
 
@@ -592,7 +665,8 @@ def generate_full_res(parameters, log):
         Q=80,
     )
     log.log(
-        parameters["my_level"], f" > finished in {int(np.ceil((time.time()-start)/60))} mins!\n"
+        parameters["my_level"],
+        f" > finished in {int(np.ceil((time.time()-start)/60))} mins!\n",
     )
 
     # Evaluate residual registration mismatch
