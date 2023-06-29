@@ -1,6 +1,6 @@
 {
 	"resolutions": [0.05, 0.15, 0.45, 1],
-	"image_level": 7,
+	"image_level": 3,
 	"pad_fraction": 0.5,
 	"slice_idx": "slice_0",
 	"my_level": 45,

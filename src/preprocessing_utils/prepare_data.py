@@ -1,7 +1,8 @@
-import multiresolutionimageinterface as mir
-import numpy as np
 import cv2
 import matplotlib.pyplot as plt
+import multiresolutionimageinterface as mir
+import numpy as np
+import openslide as os
 from scipy import ndimage
 
 
@@ -13,8 +14,8 @@ class Processor:
         - is in .tif or .mrxs format
         - has multiple resolution layers (pyramidal)
     """
-    def __init__(self, image_file, mask_file, save_dir, level, count):
 
+    def __init__(self, image_file, mask_file, save_dir, level, count):
         assert isinstance(level, int), "level must be an integer"
 
         self.image_filename = image_file
@@ -24,7 +25,7 @@ class Processor:
         self.new_level = level
         self.count = count
 
-        self.opener = mir.MultiResolutionImageReader()
+        self.opener = os.OpenSlide
 
         return
 
@@ -35,28 +36,40 @@ class Processor:
         """
 
         # load raw image
-        self.raw_image = self.opener.open(str(self.image_filename))
-        assert self.raw_image.valid(), "Loaded image was not valid"
+        self.raw_image = self.opener(str(self.image_filename))
 
         # Load raw mask if available
         if self.mask_provided:
-            self.raw_mask = self.opener.open(str(self.mask_filename))
-            assert self.raw_mask.valid(), "Loaded mask was not valid"
+            self.raw_mask = self.opener(str(self.mask_filename))
 
         # Get downsampled image
-        self.new_dims = self.raw_image.getLevelDimensions(self.new_level)
-        self.image = self.raw_image.getUCharPatch(0, 0, *self.new_dims, self.new_level)
+        self.new_dims = self.raw_image.level_dimensions[self.new_level]
+        self.image = self.raw_image.read_region(
+            self.new_dims, self.new_level, self.new_dims
+        )
+        self.image = np.array(self.image)
+        ### EXPERIMENTAL - shift black background to white for correct otsu thresholding###
+        self.image[np.all(self.image < 10, axis=2)] = 255
+        self.image = ((self.image / np.max(self.image)) * 255).astype("uint8")
+
+        ### \\\ EXPERIMENTAL ###
 
         # Get downsampled mask with same dimensions as downsampled image
         if self.mask_provided:
-            mask_dims = [
-                self.raw_mask.getLevelDimensions(i)
-                for i in range(self.raw_mask.getNumberOfLevels())
-            ]
-            mask_level = mask_dims.index(self.new_dims)
-            self.mask = self.raw_mask.getUCharPatch(0, 0, *self.new_dims, mask_level)
-            self.mask = np.squeeze(self.mask)
+            diff = np.array(
+                np.array(self.raw_mask.level_dimensions) - np.array(self.new_dims)
+            ).sum(axis=1)
+            mask_level = np.argmin(diff)
+            mask_dims = self.raw_mask.level_dimensions[mask_level]
+            self.mask = (
+                self.raw_mask.read_region(mask_dims, mask_level, mask_dims)
+                .convert("RGB")
+                .convert("L")
+                .resize(self.new_dims)
+            )
+            self.mask = np.array(self.mask)
             self.mask = ((self.mask / np.max(self.mask)) * 255).astype("uint8")
+            #self.final_mask = self.mask
 
         else:
             raise ValueError("PythoStitcher requires a tissue mask for stitching")
@@ -72,18 +85,16 @@ class Processor:
         # Convert to HSV space and perform Otsu thresholding
         self.image_hsv = cv2.cvtColor(self.image, cv2.COLOR_RGB2HSV)
         self.image_hsv = cv2.medianBlur(self.image_hsv[:, :, 1], 7)
-        _, self.otsu_mask = cv2.threshold(self.image_hsv, 0, 255, cv2.THRESH_OTSU +
-                                          cv2.THRESH_BINARY)
+        _, self.otsu_mask = cv2.threshold(
+            self.image_hsv, 0, 255, cv2.THRESH_OTSU + cv2.THRESH_BINARY
+        )
         self.otsu_mask = (self.otsu_mask / np.max(self.otsu_mask)).astype("uint8")
 
         # Postprocess the mask a bit
         kernel = cv2.getStructuringElement(shape=cv2.MORPH_ELLIPSE, ksize=(8, 8))
         pad = int(0.1 * self.otsu_mask.shape[0])
         self.otsu_mask = np.pad(
-            self.otsu_mask,
-            [[pad, pad], [pad, pad]],
-            mode="constant",
-            constant_values=0
+            self.otsu_mask, [[pad, pad], [pad, pad]], mode="constant", constant_values=0
         )
         self.otsu_mask = cv2.morphologyEx(
             src=self.otsu_mask, op=cv2.MORPH_CLOSE, kernel=kernel, iterations=3
@@ -113,21 +124,22 @@ class Processor:
         # Temporarily enlarge mask for better closing
         pad = int(0.1 * self.mask.shape[0])
         self.mask = np.pad(
-            self.mask,
-            [[pad, pad], [pad, pad]],
-            mode="constant",
-            constant_values=0
+            self.mask, [[pad, pad], [pad, pad]], mode="constant", constant_values=0
         )
 
         # Closing operation to close some holes on the mask border
         kernel = cv2.getStructuringElement(shape=cv2.MORPH_ELLIPSE, ksize=(10, 10))
-        self.mask = cv2.morphologyEx(src=self.mask, op=cv2.MORPH_CLOSE, kernel=kernel, iterations=2)
+        self.mask = cv2.morphologyEx(
+            src=self.mask, op=cv2.MORPH_CLOSE, kernel=kernel, iterations=2
+        )
 
         # Flood fill to remove holes inside mask. The floodfill mask is required by opencv
         seedpoint = (0, 0)
-        floodfill_mask = np.zeros((self.mask.shape[0] + 2, self.mask.shape[1] + 2)).astype("uint8")
+        floodfill_mask = np.zeros(
+            (self.mask.shape[0] + 2, self.mask.shape[1] + 2)
+        ).astype("uint8")
         _, _, self.mask, _ = cv2.floodFill(self.mask, floodfill_mask, seedpoint, 255)
-        self.mask = self.mask[1+pad:-1-pad, 1+pad:-1-pad]
+        self.mask = self.mask[1 + pad : -1 - pad, 1 + pad : -1 - pad]
         self.mask = 1 - self.mask
 
         assert np.sum(self.mask) > 0, "floodfilled mask is empty"
@@ -140,7 +152,11 @@ class Processor:
         """
 
         # Combine
-        self.final_mask = self.otsu_mask * self.mask
+        #self.final_mask = self.otsu_mask * self.mask
+        self.final_mask = self.mask
+
+        #self.final_mask = self.mask  # (self.mask * 255).astype("uint8")
+        #return
 
         # Postprocess similar to tissue segmentation mask. Get largest cc and floodfill.
         num_labels, labeled_im, stats, _ = cv2.connectedComponentsWithStats(
@@ -156,13 +172,19 @@ class Processor:
             self.final_mask,
             [[offset, offset], [offset, offset]],
             mode="constant",
-            constant_values=0
+            constant_values=0,
         )
 
         seedpoint = (0, 0)
-        floodfill_mask = np.zeros((self.final_mask.shape[0] + 2, self.final_mask.shape[1] + 2)).astype("uint8")
-        _, _, self.final_mask, _ = cv2.floodFill(self.final_mask, floodfill_mask, seedpoint, 255)
-        self.final_mask = self.final_mask[1 + offset:-1 - offset, 1 + offset:-1 - offset]
+        floodfill_mask = np.zeros(
+            (self.final_mask.shape[0] + 2, self.final_mask.shape[1] + 2)
+        ).astype("uint8")
+        _, _, self.final_mask, _ = cv2.floodFill(
+            self.final_mask, floodfill_mask, seedpoint, 255
+        )
+        self.final_mask = self.final_mask[
+            1 + offset : -1 - offset, 1 + offset : -1 - offset
+        ]
         self.final_mask = 1 - self.final_mask
 
         # Crop to nonzero pixels for efficient saving
@@ -207,14 +229,22 @@ def prepare_data(parameters):
 
     # Get all image files
     image_files = sorted(
-        [i for i in parameters["data_dir"].joinpath("raw_images").iterdir() if not i.is_dir()]
+        [
+            i
+            for i in parameters["data_dir"].joinpath("raw_images").iterdir()
+            if not i.is_dir()
+        ]
     )
 
     # Get mask files if these are provided
     masks_provided = parameters["data_dir"].joinpath("raw_masks").is_dir()
     if masks_provided:
-        mask_files = sorted([i for i in parameters["data_dir"].joinpath("raw_masks").iterdir()])
-        assert len(image_files) == len(mask_files), "found unequal number of image/mask files!"
+        mask_files = sorted(
+            [i for i in parameters["data_dir"].joinpath("raw_masks").iterdir()]
+        )
+        assert len(image_files) == len(
+            mask_files
+        ), "found unequal number of image/mask files!"
     else:
         mask_files = [None] * len(image_files)
 
@@ -234,7 +264,6 @@ def prepare_data(parameters):
         data_processor.get_tissueseg_mask()
         data_processor.combine_masks()
         data_processor.save()
-
     parameters["log"].log(parameters["my_level"], " > finished!\n")
 
     return
