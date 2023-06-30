@@ -4,9 +4,9 @@
 	"pad_fraction": 0.5,
 	"slice_idx": "slice_0",
 	"my_level": 45,
-	
+
 	"n_solutions": 40,
-	"n_generations": [4, 2, 2, 1],
+	"n_generations": [400, 200, 200, 100],
 	"n_parents": 2,
 	"n_mating": 6,
 	"p_crossover": 0.5,

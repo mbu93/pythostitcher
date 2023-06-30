@@ -69,7 +69,7 @@ class Processor:
             )
             self.mask = np.array(self.mask)
             self.mask = ((self.mask / np.max(self.mask)) * 255).astype("uint8")
-            #self.final_mask = self.mask
+            # self.final_mask = self.mask
 
         else:
             raise ValueError("PythoStitcher requires a tissue mask for stitching")
@@ -139,7 +139,7 @@ class Processor:
             (self.mask.shape[0] + 2, self.mask.shape[1] + 2)
         ).astype("uint8")
         _, _, self.mask, _ = cv2.floodFill(self.mask, floodfill_mask, seedpoint, 255)
-        self.mask = self.mask[1 + pad : -1 - pad, 1 + pad : -1 - pad]
+        self.mask = self.mask[1 + pad: -1 - pad, 1 + pad: -1 - pad]
         self.mask = 1 - self.mask
 
         assert np.sum(self.mask) > 0, "floodfilled mask is empty"
@@ -152,11 +152,11 @@ class Processor:
         """
 
         # Combine
-        #self.final_mask = self.otsu_mask * self.mask
-        self.final_mask = self.mask
+        self.final_mask = self.otsu_mask * self.mask
+        # self.final_mask = self.mask
 
-        #self.final_mask = self.mask  # (self.mask * 255).astype("uint8")
-        #return
+        # self.final_mask = self.mask  # (self.mask * 255).astype("uint8")
+        # return
 
         # Postprocess similar to tissue segmentation mask. Get largest cc and floodfill.
         num_labels, labeled_im, stats, _ = cv2.connectedComponentsWithStats(
@@ -183,14 +183,14 @@ class Processor:
             self.final_mask, floodfill_mask, seedpoint, 255
         )
         self.final_mask = self.final_mask[
-            1 + offset : -1 - offset, 1 + offset : -1 - offset
+            1 + offset: -1 - offset, 1 + offset: -1 - offset
         ]
         self.final_mask = 1 - self.final_mask
 
         # Crop to nonzero pixels for efficient saving
         r, c = np.nonzero(self.final_mask)
-        self.final_mask = self.final_mask[np.min(r) : np.max(r), np.min(c) : np.max(c)]
-        self.image = self.image[np.min(r) : np.max(r), np.min(c) : np.max(c)]
+        self.final_mask = self.final_mask[np.min(r): np.max(r), np.min(c): np.max(c)]
+        self.image = self.image[np.min(r): np.max(r), np.min(c): np.max(c)]
         self.image = self.image.astype("uint8")
         self.final_mask = (self.final_mask * 255).astype("uint8")
 

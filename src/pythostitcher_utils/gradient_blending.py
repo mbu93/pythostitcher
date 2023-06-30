@@ -1,10 +1,10 @@
-import multiresolutionimageinterface as mir
-import numpy as np
-import cv2
-import pyvips
-import matplotlib.pyplot as plt
 import time
 
+import cv2
+import matplotlib.pyplot as plt
+import multiresolutionimageinterface as mir
+import numpy as np
+import pyvips
 from scipy.spatial.distance import cdist
 
 from .fuse_images_highres import fuse_images_highres, is_valid_contour
@@ -34,7 +34,6 @@ def perform_blending(result_image, result_mask, full_res_fragments, log, paramet
     best_mask_output_dims = 4000
     all_mask_dims = [tif_mask.getLevelDimensions(i) for i in range(tif_mask.getNumberOfLevels())]
     mask_ds_level = np.argmin([(i[0] - best_mask_output_dims) ** 2 for i in all_mask_dims])
-
     mask_ds = tif_mask.getUCharPatch(
         startX=0,
         startY=0,
@@ -134,7 +133,7 @@ def perform_blending(result_image, result_mask, full_res_fragments, log, paramet
                 width = np.min([short_end_len, max_image_width - seed[0] - 1])
                 height = np.min([long_end, max_image_height - seed[1] - 1])
 
-            ### SANITY CHECK FOR TILE SELECTION
+            # SANITY CHECK FOR TILE SELECTION
             """
             scale_factor = 2**mask_ds_level
             xvals = [
@@ -158,7 +157,13 @@ def perform_blending(result_image, result_mask, full_res_fragments, log, paramet
             """
 
             # Only perform bending in case of overlap
-            tile_mask = result_mask.crop(xstart, ystart, width, height)
+            width = width if width > 0 else 1
+            height = height if height > 0 else 1
+            print(xstart, ystart, width, height)
+            try:
+                tile_mask = result_mask.crop(xstart, ystart, width, height)
+            except Exception:
+                continue
 
             if tile_mask.max() > 1:
 
@@ -313,10 +318,10 @@ def perform_blending(result_image, result_mask, full_res_fragments, log, paramet
 
     # Get the correct orientation of the prostate
     result_image = correct_orientation(
-        mask = mask_ds,
-        result_image = result_image,
-        parameters = parameters,
-        debug_visualization = False
+        mask=mask_ds,
+        result_image=result_image,
+        parameters=parameters,
+        debug_visualization=False
     )
 
     return result_image
