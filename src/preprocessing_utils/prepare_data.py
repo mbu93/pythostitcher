@@ -45,7 +45,7 @@ class Processor:
         # Get downsampled image
         self.new_dims = self.raw_image.level_dimensions[self.new_level]
         self.image = self.raw_image.read_region(
-            self.new_dims, self.new_level, self.new_dims
+            (0, 0), self.new_level, self.new_dims
         )
         self.image = np.array(self.image)
         ### EXPERIMENTAL - shift black background to white for correct otsu thresholding###
@@ -62,7 +62,7 @@ class Processor:
             mask_level = np.argmin(diff)
             mask_dims = self.raw_mask.level_dimensions[mask_level]
             self.mask = (
-                self.raw_mask.read_region(mask_dims, mask_level, mask_dims)
+                self.raw_mask.read_region((0, 0), mask_level, mask_dims)
                 .convert("RGB")
                 .convert("L")
                 .resize(self.new_dims)

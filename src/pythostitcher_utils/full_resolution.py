@@ -210,7 +210,7 @@ class FullResImage:
         )
         image_ds_dims = self.raw_image.level_dimensions[image_ds_level]
         self.tissueseg_mask = np.asarray(
-            self.raw_mask.read_region(mask_dim, self.mask_ds_level, image_ds_dims)
+            self.raw_mask.read_region((0, 0), self.mask_ds_level, mask_dim)
             .convert("RGB")
             .convert("L")
         )
@@ -281,7 +281,7 @@ class FullResImage:
         image_ds_dims = self.raw_image.level_dimensions[image_ds_level]
         print(self.raw_image.level_dimensions)
         self.otsu_image = np.asarray(self.raw_image.read_region(
-            image_ds_dims, int(image_ds_level), image_ds_dims
+            (0,0), int(image_ds_level), image_ds_dims
         ))
 
         image_hsv = cv2.cvtColor(self.otsu_image, cv2.COLOR_RGB2HSV)
