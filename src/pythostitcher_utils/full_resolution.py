@@ -189,14 +189,14 @@ class FullResImage:
         # Get mask which is closest to 2k image. This is an empirical trade-off
         # between feasible image processing with opencv and mask resolution
         best_mask_output_dims = 2000
-        all_mask_dims = self.raw_mask.level_dimensions
+        all_mask_dims = [
+            (np.array(self.raw_mask.level_dimensions[0]) / x).astype("uint16")
+            for x in self.raw_image.level_downsamples
+        ]
         print(all_mask_dims)
         self.mask_ds_level = np.argmin(
             [(i[0] - best_mask_output_dims) ** 2 for i in all_mask_dims]
         )
-        while ((np.array(self.raw_mask.level_dimensions[self.mask_ds_level]) -
-                np.array(self.raw_image.level_dimensions[-1])) < 500).sum():
-            self.mask_ds_level -= 1
         mask_dim = (
             int(all_mask_dims[self.mask_ds_level][0]),
             int(all_mask_dims[self.mask_ds_level][1]),
@@ -257,7 +257,7 @@ class FullResImage:
             self.tissueseg_mask, floodfill_mask, seedpoint, 255
         )
         self.tissueseg_mask = self.tissueseg_mask[
-            temp_pad + 1: -(temp_pad + 1), temp_pad + 1: -(temp_pad + 1)
+            temp_pad + 1 : -(temp_pad + 1), temp_pad + 1 : -(temp_pad + 1)
         ]
         self.tissueseg_mask = 1 - self.tissueseg_mask
 
@@ -279,10 +279,9 @@ class FullResImage:
             ).sum(axis=1)
         )
         image_ds_dims = self.raw_image.level_dimensions[image_ds_level]
-        print(self.raw_image.level_dimensions)
-        self.otsu_image = np.asarray(self.raw_image.read_region(
-            (0,0), int(image_ds_level), image_ds_dims
-        ))
+        self.otsu_image = np.asarray(
+            self.raw_image.read_region((0, 0), int(image_ds_level), image_ds_dims)
+        )
 
         image_hsv = cv2.cvtColor(self.otsu_image, cv2.COLOR_RGB2HSV)
         image_hsv = cv2.medianBlur(image_hsv[:, :, 1], 7)
@@ -336,15 +335,15 @@ class FullResImage:
             self.final_mask, floodfill_mask, seedpoint, 255
         )
         self.final_mask = self.final_mask[
-            1 + offset: -1 - offset, 1 + offset: -1 - offset
+            1 + offset : -1 - offset, 1 + offset : -1 - offset
         ]
         self.final_mask = 1 - self.final_mask
 
         # Crop to nonzero pixels for efficient saving
         self.r_idx, self.c_idx = np.nonzero(self.final_mask)
         self.final_mask = self.final_mask[
-            np.min(self.r_idx): np.max(self.r_idx),
-            np.min(self.c_idx): np.max(self.c_idx),
+            np.min(self.r_idx) : np.max(self.r_idx),
+            np.min(self.c_idx) : np.max(self.c_idx),
         ]
 
         # Convert to pyvips array
